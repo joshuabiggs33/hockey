@@ -1,10 +1,9 @@
 import os, time, requests
-from collections import Counter
 
 KEY = os.environ.get("ODDSPAPI_KEY")
 BASE = "https://api.oddspapi.io/v4"
 BOOKS = "pinnacle,draftkings,fanduel"
-PROPS = {"15124": "Goals (anytime)", "15118": "Assists 0.5", "15130": "Points 0.5"}
+PROPS = {"15124": "Goals", "15118": "Assists", "15130": "Points"}
 used = 0
 
 def get(path, **params):
@@ -15,60 +14,63 @@ def get(path, **params):
     time.sleep(1.5)
     return r
 
-def look(label, start, end):
-    print(f"\n===== {label}: {start} to {end} =====")
-    r = get("/fixtures", sportId=15, **{"from": start, "to": end})
+def catalog():
+    print("\n===== MARKET CATALOG: goal, assist and points markets =====")
+    r = get("/markets", sportId=15)
     print(f"HTTP {r.status_code}")
     if r.status_code != 200:
         print(r.text[:300])
-        return None
-    data = r.json()
-    if not isinstance(data, list):
-        print("Unexpected response:", str(data)[:300])
-        return None
-    print(f"Total ice hockey fixtures returned: {len(data)}")
-    if data:
-        print("Fields available:", sorted(data[0].keys()))
-    names = Counter(f.get("tournamentName") for f in data)
-    print("Leagues found:", dict(names.most_common(8)))
-    nhl = [f for f in data if f.get("tournamentName") == "NHL"]
-    with_odds = [f for f in nhl if f.get("hasOdds")]
-    print(f"NHL games: {len(nhl)} (flagged as having odds: {len(with_odds)})")
-    return nhl[0] if nhl else None
+        return
+    rows = [m for m in r.json() if m.get("sportId") == 15]
+    words = ("scorer", "assist", "to score", "points")
+    hits = [m for m in rows if any(w in m.get("marketName", "").lower() for w in words)]
+    for m in hits[:30]:
+        print(f"  {m['marketId']}: {m['marketName']} (hcap={m.get('handicap')})")
+    print(f"  ({len(hits)} matching markets in total)")
 
 def check_game(g):
-    print(f"\nChecking: {g['participant1Name']} vs {g['participant2Name']} ({g['startTime']})")
+    print(f"  Game: {g['participant1Name']} vs {g['participant2Name']} ({g['startTime'][:10]})")
     r = get("/historical-odds", fixtureId=g["fixtureId"], bookmakers=BOOKS)
-    print(f"Historical odds: HTTP {r.status_code}")
     if r.status_code != 200:
-        print(r.text[:300])
+        print(f"  -> HTTP {r.status_code}: {r.text[:120]}")
         return
     books = r.json().get("bookmakers", {})
     if not books:
-        print("  No bookmaker data returned")
+        print("  -> no bookmaker data")
     for name, book in books.items():
         markets = book.get("markets", {})
-        print(f"  {name}: {len(markets)} markets")
+        parts = []
         for mid, label in PROPS.items():
             m = markets.get(mid)
-            if not m:
-                print(f"    {label}: not found")
-                continue
-            players, snaps = set(), 0
-            for out in m.get("outcomes", {}).values():
-                for pid, series in out.get("players", {}).items():
-                    players.add(pid)
-                    if isinstance(series, list):
-                        snaps += len(series)
-            print(f"    {label}: FOUND - {len(players)} players, {snaps} price snapshots")
+            n = 0
+            if m:
+                ids = set()
+                for out in m.get("outcomes", {}).values():
+                    ids.update(out.get("players", {}).keys())
+                n = len(ids)
+            parts.append(f"{label}={n}")
+        print(f"  -> {name}: " + ", ".join(parts))
+
+def window(label, start, end):
+    print(f"\n===== {label}: {start} to {end} =====")
+    r = get("/fixtures", sportId=15, **{"from": start, "to": end})
+    print(f"  Fixtures: HTTP {r.status_code}")
+    if r.status_code != 200:
+        print(r.text[:200])
+        return
+    data = r.json()
+    nhl = [f for f in data if f.get("tournamentName") == "NHL"] if isinstance(data, list) else []
+    print(f"  NHL games found: {len(nhl)}")
+    if nhl:
+        check_game(nhl[len(nhl) // 2])
 
 if not KEY:
     print("No API key found. Check the secret name ODDSPAPI_KEY.")
 else:
-    look("THIS WEEK (control)", "2026-11-05", "2026-11-12")
-    for label, start, end in [("RECENT", "2026-10-20", "2026-10-29"),
-                              ("LAST SEASON", "2025-11-10", "2025-11-19")]:
-        game = look(label, start, end)
-        if game:
-            check_game(game)
+    catalog()
+    for label, start, end in [("APR 2026", "2026-04-10", "2026-04-19"),
+                              ("JAN 2026", "2026-01-10", "2026-01-19"),
+                              ("DEC 2025", "2025-12-10", "2025-12-19"),
+                              ("NOV 2025", "2025-11-15", "2025-11-24")]:
+        window(label, start, end)
     print(f"\nRequests used in this test: {used}")
