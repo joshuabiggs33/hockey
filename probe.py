@@ -1,4 +1,5 @@
 import os, time, requests
+from collections import Counter
 
 KEY = os.environ.get("ODDSPAPI_KEY")
 BASE = "https://api.oddspapi.io/v4"
@@ -14,22 +15,29 @@ def get(path, **params):
     time.sleep(1.5)
     return r
 
-def find_game(start, end):
+def look(label, start, end):
+    print(f"\n===== {label}: {start} to {end} =====")
     r = get("/fixtures", sportId=15, **{"from": start, "to": end})
-    print(f"Fixtures {start} to {end}: HTTP {r.status_code}")
+    print(f"HTTP {r.status_code}")
     if r.status_code != 200:
         print(r.text[:300])
         return None
     data = r.json()
     if not isinstance(data, list):
-        print(str(data)[:300])
+        print("Unexpected response:", str(data)[:300])
         return None
-    games = [f for f in data if f.get("tournamentName") == "NHL" and f.get("hasOdds")]
-    print(f"  NHL games with odds found: {len(games)}")
-    return games[0] if games else None
+    print(f"Total ice hockey fixtures returned: {len(data)}")
+    if data:
+        print("Fields available:", sorted(data[0].keys()))
+    names = Counter(f.get("tournamentName") for f in data)
+    print("Leagues found:", dict(names.most_common(8)))
+    nhl = [f for f in data if f.get("tournamentName") == "NHL"]
+    with_odds = [f for f in nhl if f.get("hasOdds")]
+    print(f"NHL games: {len(nhl)} (flagged as having odds: {len(with_odds)})")
+    return nhl[0] if nhl else None
 
 def check_game(g):
-    print(f"\nGame: {g['participant1Name']} vs {g['participant2Name']} ({g['startTime']})")
+    print(f"\nChecking: {g['participant1Name']} vs {g['participant2Name']} ({g['startTime']})")
     r = get("/historical-odds", fixtureId=g["fixtureId"], bookmakers=BOOKS)
     print(f"Historical odds: HTTP {r.status_code}")
     if r.status_code != 200:
@@ -57,10 +65,10 @@ def check_game(g):
 if not KEY:
     print("No API key found. Check the secret name ODDSPAPI_KEY.")
 else:
+    look("THIS WEEK (control)", "2026-11-05", "2026-11-12")
     for label, start, end in [("RECENT", "2026-10-20", "2026-10-29"),
                               ("LAST SEASON", "2025-11-10", "2025-11-19")]:
-        print(f"\n===== {label} =====")
-        game = find_game(start, end)
+        game = look(label, start, end)
         if game:
             check_game(game)
     print(f"\nRequests used in this test: {used}")
