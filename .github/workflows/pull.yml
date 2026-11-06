@@ -1,0 +1,29 @@
+name: Pull
+on:
+  workflow_dispatch:
+    inputs:
+      max_games:
+        description: "How many games to pull this run"
+        default: "10"
+permissions:
+  contents: write
+jobs:
+  pull:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install requests
+      - run: python pull.py
+        env:
+          ODDSPAPI_KEY: ${{ secrets.ODDSPAPI_KEY }}
+          MAX_GAMES: ${{ inputs.max_games }}
+      - name: Save results
+        run: |
+          git config user.name "data-bot"
+          git config user.email "data-bot@users.noreply.github.com"
+          git add data
+          git commit -m "Add odds data" || echo "Nothing new to save"
+          git push
