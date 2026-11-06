@@ -1,66 +1,63 @@
-import os, time, requests
+import os, csv, time, requests
+from datetime import datetime, timezone, timedelta
 
 KEY = os.environ.get("ODDSPAPI_KEY")
 BASE = "https://api.oddspapi.io/v4"
-BOOKS = "pinnacle,draftkings,fanduel"
-PROPS = {"15124": "Goals", "152401": "GoalsAlt", "15118": "Assists",
-         "152376": "AssistsAlt", "15130": "Points", "152386": "PointsAlt"}
 used = 0
 
 def get(path, **params):
     global used
     params["apiKey"] = KEY
-    for attempt in range(2):
-        r = requests.get(BASE + path, params=params, timeout=60)
-        used += 1
-        time.sleep(10)
-        if r.status_code != 429:
-            break
-        print("  (rate limited, waiting 30s and trying once more)")
-        time.sleep(30)
+    r = requests.get(BASE + path, params=params, timeout=60)
+    used += 1
+    time.sleep(10)
     return r
 
-def check_game(g):
-    print(f"  Game: {g['participant1Name']} vs {g['participant2Name']} ({g['startTime'][:10]})")
-    r = get("/historical-odds", fixtureId=g["fixtureId"], bookmakers=BOOKS)
+def names_from(fixture_id):
+    r = get("/odds", fixtureId=fixture_id, bookmakers="pinnacle")
+    print(f"  /odds HTTP {r.status_code}")
     if r.status_code != 200:
-        print(f"  -> HTTP {r.status_code}: {r.text[:120]}")
-        return
-    books = r.json().get("bookmakers", {})
-    if not books:
-        print("  -> no bookmaker data")
-    for name, book in books.items():
-        markets = book.get("markets", {})
-        parts = []
-        for mid, label in PROPS.items():
-            m = markets.get(mid)
-            n = 0
-            if m:
-                ids = set()
-                for out in m.get("outcomes", {}).values():
-                    ids.update(out.get("players", {}).keys())
-                n = len(ids)
-            parts.append(f"{label}={n}")
-        print(f"  -> {name}: " + ", ".join(parts))
-
-def window(label, start, end, pick):
-    print(f"\n===== {label}: {start} to {end} =====")
-    r = get("/fixtures", sportId=15, **{"from": start, "to": end})
-    print(f"  Fixtures: HTTP {r.status_code}")
-    if r.status_code != 200:
-        print(r.text[:200])
-        return
+        print("  ", r.text[:200])
+        return {}
     data = r.json()
-    nhl = [f for f in data if f.get("tournamentName") == "NHL"] if isinstance(data, list) else []
-    print(f"  NHL games found: {len(nhl)}")
-    if nhl:
-        check_game(nhl[min(pick, len(nhl) - 1)])
+    names = {}
+    book = data.get("bookmakerOdds", {}).get("pinnacle", {})
+    for m in book.get("markets", {}).values():
+        for out in m.get("outcomes", {}).values():
+            for pid, p in out.get("players", {}).items():
+                if pid != "0" and isinstance(p, dict) and p.get("playerName"):
+                    names[pid] = p["playerName"]
+    return names
+
+saved = set()
+with open("data/raw/props.csv", newline="") as f:
+    for row in csv.DictReader(f):
+        saved.add(row["playerId"])
+print("Distinct player IDs in the saved data:", len(saved))
 
 if not KEY:
-    print("No API key found. Check the secret name ODDSPAPI_KEY.")
+    print("No API key found.")
 else:
-    window("FEB 2026", "2026-02-10", "2026-02-19", 5)
-    window("JAN 2026", "2026-01-10", "2026-01-19", 5)
-    window("DEC 2025", "2025-12-10", "2025-12-19", 0)
-    window("NOV 2025", "2025-11-15", "2025-11-24", 0)
+    now = datetime.now(timezone.utc)
+    day = now.date()
+    r = get("/fixtures", sportId=15, **{"from": str(day - timedelta(days=1)), "to": str(day + timedelta(days=2))})
+    print("Fixtures HTTP", r.status_code)
+    games = [f for f in r.json() if f.get("tournamentName") == "NHL" and f.get("hasOdds")]
+    games.sort(key=lambda f: f["startTime"])
+    upcoming = [f for f in games if f["startTime"] > now.strftime("%Y-%m-%dT%H:%M")]
+    print(f"NHL games with odds: {len(games)}, upcoming: {len(upcoming)}")
+    pick = upcoming[0] if upcoming else (games[0] if games else None)
+    if pick:
+        print(f"\nTest 1, upcoming game: {pick['participant1Name']} vs {pick['participant2Name']} ({pick['startTime']})")
+        names = names_from(pick["fixtureId"])
+        print(f"  Players with names: {len(names)}")
+        print("  Examples:", list(names.items())[:5])
+        print(f"  IDs also found in your saved data: {len(set(names) & saved)}")
+
+    with open("data/raw/games_log.csv", newline="") as f:
+        first = next(csv.DictReader(f))
+    print(f"\nTest 2, finished game: {first['home']} vs {first['away']} ({first['date']})")
+    old = names_from(first["fixtureId"])
+    print(f"  Players with names: {len(old)}")
+    print(f"  IDs also found in your saved data: {len(set(old) & saved)}")
     print(f"\nRequests used in this test: {used}")
